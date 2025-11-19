@@ -1,0 +1,100 @@
+{
+	"name": "activity-tracker",
+	"version": "1.0.14",
+	"description": "backend activity tracker",
+	"author": "Rangga Krisna",
+	"repository": "ranggakrisnaa/activity-tracker",
+	"license": "MIT",
+	"main": "index.ts",
+	"private": true,
+	"scripts": {
+		"build": "tsc && tsup",
+		"typecheck": "tsc --noEmit",
+		"start:dev": "node --import=tsx --watch src/index.ts",
+		"start:prod": "node dist/index.js",
+		"typeorm": "tsx ./node_modules/typeorm/cli.js -d src/database/data-source.ts",
+		"migration:generate": "tsx ./node_modules/typeorm/cli.js migration:generate -d src/database/data-source.ts",
+		"migration:run": "tsx ./node_modules/typeorm/cli.js migration:run -d src/database/data-source.ts",
+		"migration:revert": "tsx ./node_modules/typeorm/cli.js migration:revert -d src/database/data-source.ts",
+		"lint": "eslint .",
+		"lint:fix": "eslint . --fix",
+		"format": "prettier --write \"src/**/*.ts\"",
+		"format:check": "prettier --check \"src/**/*.ts\"",
+		"check": "pnpm lint && pnpm format:check",
+		"test": "vitest run",
+		"test:cov": "vitest run --coverage",
+		"prepare": "husky"
+	},
+	"lint-staged": {
+		"*.ts": [
+			"eslint --fix",
+			"prettier --write"
+		]
+	},
+	"dependencies": {
+		"@asteasolutions/zod-to-openapi": "7.3.4",
+		"bcrypt": "^5.1.1",
+		"cors": "2.8.5",
+		"dotenv": "17.2.1",
+		"express": "5.1.0",
+		"express-rate-limit": "8.0.1",
+		"helmet": "8.1.0",
+		"http-status-codes": "2.3.0",
+		"ioredis": "^5.4.1",
+		"jsonwebtoken": "^9.0.2",
+		"pg": "^8.13.1",
+		"pino": "9.9.0",
+		"pino-http": "10.5.0",
+		"reflect-metadata": "^0.2.2",
+		"socket.io": "^4.8.1",
+		"swagger-ui-express": "5.0.1",
+		"typeorm": "^0.3.20",
+		"uuid": "^11.0.3",
+		"zod": "3.25.76"
+	},
+	"devDependencies": {
+		"@eslint/js": "^9.15.0",
+		"@types/bcrypt": "^5.0.2",
+		"@types/cors": "2.8.19",
+		"@types/eslint-config-prettier": "^6.11.3",
+		"@types/express": "5.0.3",
+		"@types/jsonwebtoken": "^9.0.7",
+		"@types/node": "^22.9.3",
+		"@types/supertest": "6.0.3",
+		"@types/swagger-ui-express": "4.1.8",
+		"@types/uuid": "^10.0.0",
+		"@vitest/coverage-v8": "3.2.4",
+		"eslint": "^9.15.0",
+		"eslint-config-prettier": "^9.1.0",
+		"husky": "^9.1.7",
+		"lint-staged": "^15.2.10",
+		"pino-pretty": "13.1.1",
+		"prettier": "^3.3.3",
+		"supertest": "7.1.4",
+		"ts-node": "^10.9.2",
+		"tsconfig-paths": "^4.2.0",
+		"tsup": "8.5.0",
+		"tsx": "4.20.4",
+		"typescript": "5.9.2",
+		"typescript-eslint": "^8.15.0",
+		"vite-tsconfig-paths": "5.1.4",
+		"vitest": "3.2.4"
+	},
+	"tsup": {
+		"entry": [
+			"src/index.ts"
+		],
+		"outDir": "dist",
+		"format": [
+			"esm",
+			"cjs"
+		],
+		"target": "es2020",
+		"sourcemap": true,
+		"clean": true,
+		"dts": true,
+		"splitting": false,
+		"skipNodeModulesBundle": true
+	},
+	"packageManager": "pnpm@10.14.0"
+}

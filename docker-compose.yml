@@ -1,0 +1,284 @@
+version: "3.9"
+
+services:
+  # PostgreSQL Primary (Master) - Write Operations
+  postgres-primary:
+    image: postgres:16-alpine
+    container_name: postgres-primary
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres123
+      POSTGRES_DB: activity_tracker
+      # Replication settings
+      POSTGRES_REPLICATION_MODE: master
+      POSTGRES_REPLICATION_USER: replicator
+      POSTGRES_REPLICATION_PASSWORD: replicator123
+    volumes:
+      - postgres_primary_data:/var/lib/postgresql/data
+      - ./docker/postgres/primary/postgresql.conf:/etc/postgresql/postgresql.conf
+      - ./docker/postgres/primary/pg_hba.conf:/etc/postgresql/pg_hba.conf
+      - ./docker/postgres/init-primary.sh:/docker-entrypoint-initdb.d/init-primary.sh
+    command: >
+      postgres
+      -c config_file=/etc/postgresql/postgresql.conf
+      -c hba_file=/etc/postgresql/pg_hba.conf
+    ports:
+      - "5432:5432"
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # PostgreSQL Replica 1 (Read Replica)
+  postgres-replica-1:
+    image: postgres:16-alpine
+    container_name: postgres-replica-1
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres123
+      POSTGRES_DB: activity_tracker
+      POSTGRES_REPLICATION_MODE: slave
+      POSTGRES_MASTER_SERVICE_HOST: postgres-primary
+      POSTGRES_MASTER_SERVICE_PORT: 5432
+      POSTGRES_REPLICATION_USER: replicator
+      POSTGRES_REPLICATION_PASSWORD: replicator123
+      REPLICA_ID: 1
+    volumes:
+      - postgres_replica1_data:/var/lib/postgresql/data
+      - ./docker/postgres/replica/postgresql.conf:/etc/postgresql/postgresql.conf
+      - ./docker/postgres/init-replica.sh:/docker-entrypoint-initdb.d/init-replica.sh
+    command: >
+      postgres
+      -c config_file=/etc/postgresql/postgresql.conf
+    ports:
+      - "5433:5432"
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # PostgreSQL Replica 2 (Read Replica)
+  postgres-replica-2:
+    image: postgres:16-alpine
+    container_name: postgres-replica-2
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres123
+      POSTGRES_DB: activity_tracker
+      POSTGRES_REPLICATION_MODE: slave
+      POSTGRES_MASTER_SERVICE_HOST: postgres-primary
+      POSTGRES_MASTER_SERVICE_PORT: 5432
+      POSTGRES_REPLICATION_USER: replicator
+      POSTGRES_REPLICATION_PASSWORD: replicator123
+      REPLICA_ID: 2
+    volumes:
+      - postgres_replica2_data:/var/lib/postgresql/data
+      - ./docker/postgres/replica/postgresql.conf:/etc/postgresql/postgresql.conf
+      - ./docker/postgres/init-replica.sh:/docker-entrypoint-initdb.d/init-replica.sh
+    command: >
+      postgres
+      -c config_file=/etc/postgresql/postgresql.conf
+    ports:
+      - "5434:5432"
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Primary (Master) - Cache & Pub/Sub
+  redis-primary:
+    image: redis:7-alpine
+    container_name: redis-primary
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --requirepass redis123
+    volumes:
+      - redis_primary_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Replica (Read Replica)
+  redis-replica:
+    image: redis:7-alpine
+    container_name: redis-replica
+    command: >
+      redis-server
+      --appendonly yes
+      --slaveof redis-primary 6379
+      --masterauth redis123
+      --requirepass redis123
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_replica_data:/data
+    ports:
+      - "6380:6379"
+    depends_on:
+      redis-primary:
+        condition: service_healthy
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Sentinel for High Availability
+  redis-sentinel:
+    image: redis:7-alpine
+    container_name: redis-sentinel
+    command: /scripts/start-sentinel.sh
+    volumes:
+      - ./docker/redis/sentinel.conf:/etc/redis/sentinel.conf:ro
+      - ./docker/redis/start-sentinel.sh:/scripts/start-sentinel.sh:ro
+    ports:
+      - "26379:26379"
+    networks:
+      - app-network
+    depends_on:
+      redis-primary:
+        condition: service_healthy
+      redis-replica:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Application Service
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: activity-tracker-app
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+
+      # PostgreSQL Primary (Write)
+      DATABASE_URL: postgresql://postgres:postgres123@postgres-primary:5432/activity_tracker
+
+      # PostgreSQL Read Replicas (Comma-separated for load balancing)
+      DATABASE_READ_REPLICAS: postgresql://postgres:postgres123@postgres-replica-1:5432/activity_tracker,postgresql://postgres:postgres123@postgres-replica-2:5432/activity_tracker
+
+      # Redis Primary (Write)
+      REDIS_URL: redis://:redis123@redis-primary:6379
+
+      # Redis Replica (Read)
+      REDIS_READ_URL: redis://:redis123@redis-replica:6379
+
+      # Redis Sentinel
+      REDIS_SENTINEL_HOSTS: redis-sentinel:26379
+      REDIS_SENTINEL_NAME: mymaster
+
+      # JWT Secret
+      JWT_SECRET: your-super-secret-jwt-key-change-in-production
+      JWT_EXPIRES_IN: 24h
+
+      # API Settings
+      API_RATE_LIMIT: 1000
+      RATE_LIMIT_WINDOW: 3600
+
+      # Cache Settings
+      CACHE_TTL_SHORT: 300
+      CACHE_TTL_MEDIUM: 3600
+      CACHE_TTL_LONG: 86400
+
+      # Batch Processing
+      LOG_BATCH_SIZE: 100
+      LOG_BATCH_INTERVAL: 1000
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+      postgres-replica-1:
+        condition: service_healthy
+      postgres-replica-2:
+        condition: service_healthy
+      redis-primary:
+        condition: service_healthy
+    networks:
+      - app-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # PgAdmin for Database Management (Optional)
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: admin123
+      PGADMIN_LISTEN_PORT: 80
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres-primary
+    networks:
+      - app-network
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+
+  # Redis Commander for Redis Management (Optional)
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: redis-commander
+    environment:
+      REDIS_HOSTS: >
+        primary:redis-primary:6379:0:redis123,
+        replica:redis-replica:6379:0:redis123
+    ports:
+      - "8081:8081"
+    depends_on:
+      - redis-primary
+      - redis-replica
+    networks:
+      - app-network
+
+volumes:
+  postgres_primary_data:
+    driver: local
+  postgres_replica1_data:
+    driver: local
+  postgres_replica2_data:
+    driver: local
+  redis_primary_data:
+    driver: local
+  redis_replica_data:
+    driver: local
+  pgadmin_data:
+    driver: local
+
+networks:
+  app-network:
+    driver: bridge
