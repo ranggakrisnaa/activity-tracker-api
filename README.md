@@ -1,72 +1,175 @@
-# 🚀 Express TypeScript Boilerplate 2025
+# Activity Tracker API
 
-[![CI](https://github.com/edwinhern/express-typescript/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/edwinhern/express-typescript-2024/actions/workflows/ci.yml)
+A production-ready API service for tracking and analyzing client API usage with real-time monitoring, intelligent caching, and comprehensive rate limiting.
 
-```code
-Hey There! 🙌
-🤾 that ⭐️ button if you like this boilerplate.
+## Overview
+
+Activity Tracker API is designed to handle high-frequency API traffic while maintaining data consistency and system reliability. Built with TypeScript, Express, PostgreSQL, and Redis, it provides robust features for API activity monitoring, analytics, and access control.
+
+## Why Use This
+
+**For API Gateway & Monitoring:**
+
+- Track millions of API calls with minimal performance overhead through batch processing
+- Real-time analytics and usage patterns via WebSocket streaming
+- Per-client rate limiting with configurable thresholds
+- Detailed audit trails with request/response logging
+
+**For Production Reliability:**
+
+- Handles concurrent requests without race conditions using Redis Lua scripts
+- Automatic retry logic with exponential backoff for transient failures
+- Graceful degradation when dependencies are unavailable
+- In-memory fallback mechanisms for critical operations
+
+**For Performance:**
+
+- Intelligent cache pre-warming based on access patterns (INCRBY tracking)
+- Read/write splitting for database and Redis to distribute load
+- Batch processing reduces database writes by 100x
+- Scheduled cache refresh via cron jobs to maintain hot data
+
+**For Scalability:**
+
+- Redis Sentinel support for high availability
+- PostgreSQL read replicas for horizontal scaling
+- Stateless design enables easy horizontal scaling
+- WebSocket pub/sub for distributed real-time updates
+
+## Key Features
+
+### Core Functionality
+
+- **Client Management**: Register clients with API keys and JWT authentication
+- **Activity Logging**: Batch processing (100 logs / 5 seconds) with retry logic
+- **Usage Analytics**: Daily usage reports and top clients by time range
+- **Real-time Streaming**: SSE/WebSocket for live activity updates
+- **Rate Limiting**: Sliding window algorithm with per-client thresholds
+
+### High Availability Features
+
+- **Atomic Operations**: Redis Lua scripts prevent race conditions
+- **Cache Intelligence**: Automatic pre-warming based on hit/miss tracking
+- **Fault Tolerance**: Retry logic with exponential backoff (200ms → 5s)
+- **Graceful Degradation**: In-memory storage when Redis/DB unavailable
+- **Read Replicas**: Automatic failover for database reads
+
+### Developer Experience
+
+- **OpenAPI Documentation**: Interactive Swagger UI at `/api-docs`
+- **Type Safety**: Full TypeScript coverage with Zod validation
+- **Testing**: Vitest + Supertest for unit and integration tests
+- **Docker Support**: Production-ready containerization
+- **Real-time Logs**: Structured logging with pino
+
+## Quick Start
+
+### Prerequisites
+
+- Node.js 20.x or higher
+- PostgreSQL 15+
+- Redis 7+
+- pnpm (recommended) or npm
+
+### Installation
+
+```bash
+# Clone the repository
+git clone <repository-url>
+cd activity-tracker
+
+# Install dependencies
+pnpm install
+
+# Setup database
+docker-compose up -d postgres redis
+
+# Run migrations
+pnpm migration:run
 ```
 
-## 🌟 Introduction
+### Configuration
 
-Welcome to Express TypeScript Boilerplate 2025 – a simple and ready-to-use starting point for building backend web services with Express.js and TypeScript.
+Create `.env` file in the root directory:
 
-## 💡 Why We Made This
+```env
+# Server
+NODE_ENV=development
+PORT=8080
+HOST=localhost
 
-This starter kit helps you:
+# Database
+DATABASE_HOST=localhost
+DATABASE_PORT=5432
+DATABASE_USER=postgres
+DATABASE_PASSWORD=postgres123
+DATABASE_NAME=activity_tracker
+DATABASE_READ_REPLICAS=localhost:5433  # Optional
 
-- ✨ Start new projects faster
-- 📊 Write clean, consistent code
-- ⚡ Build things quickly
-- 🛡️ Follow best practices for security and testing
+# Redis
+REDIS_HOST=localhost
+REDIS_PORT=6379
+REDIS_PASSWORD=                         # Optional
+REDIS_READ_HOST=localhost               # Optional
+REDIS_READ_PORT=6380                    # Optional
+REDIS_SENTINEL_HOSTS=                   # Optional: host1:26379,host2:26379
+REDIS_SENTINEL_MASTER_NAME=mymaster     # Required if using Sentinel
 
-## 🚀 What's Included
+# Security
+JWT_SECRET=your-secret-key-min-32-chars
+ENCRYPTION_KEY=64-character-hex-string
 
-- 📁 Well-organized folders: Files grouped by feature so you can find things easily
-- 💨 Fast development: Quick code running with `tsx` and error checking with `tsc`
-- 🌐 Latest Node.js: Uses the newest stable Node.js version from `.tool-versions`
-- 🔧 Safe settings: Environment settings checked with Zod to prevent errors
-- 🔗 Short import paths: Clean code with easy imports using path shortcuts
-- 🔄 Auto-updates: Keeps dependencies up-to-date with Renovate
-- 🔒 Better security: Built-in protection with Helmet and CORS settings
-- 📊 Easy tracking: Built-in logging with `pino-http`
-- 🧪 Ready-to-test: Testing tools with Vitest and Supertest already set up
-- ✅ Clean code: Consistent coding style with `Biomejs`
-- 📃 Standard responses: Unified API responses using `ServiceResponse`
-- 🐳 Easy deployment: Ready for Docker containers
-- 📝 Input checking: Request validation using Zod
-- 🧩 API browser: Interactive API docs with Swagger UI
+# Rate Limiting (defaults)
+API_RATE_LIMIT=1000                     # Global default
 
-## 🛠️ Getting Started
+# Cache Configuration
+CACHE_TTL_USAGE_DAILY=3600              # 1 hour
+CACHE_TTL_USAGE_TOP=3600                # 1 hour
+CACHE_VERSION=v1                        # Increment to invalidate all cache
 
-### Video Demo
+# Cache Pre-warming
+CACHE_PREWARM_ENABLED=true              # Enable startup pre-warming
+CACHE_PREWARM_CRON_ENABLED=true         # Enable scheduled pre-warming
+CACHE_HIT_TRACKING_ENABLED=true         # Track cache patterns with INCRBY
 
-For a visual guide, watch the [video demo](https://github.com/user-attachments/assets/b1698dac-d582-45a0-8d61-31131732b74e) to see the setup and running of the project.
+# Logging
+LOG_BATCH_SIZE=100                      # Batch logs before DB insert
+LOG_BATCH_INTERVAL_MS=5000              # Flush interval
+```
 
-### Step-by-Step Guide
+### Running the Application
 
-#### Step 1: 🚀 Initial Setup
+```bash
+# Development mode with hot reload
+pnpm start:dev
 
-- Clone the repository: `git clone https://github.com/edwinhern/express-typescript.git`
-- Navigate: `cd express-typescript`
-- Install dependencies: `pnpm install`
+# Build for production
+pnpm build
 
-#### Step 2: ⚙️ Environment Configuration
+# Production mode
+pnpm start:prod
 
-- Create `.env`: Copy `.env.template` to `.env`
-- Update `.env`: Fill in necessary environment variables
+# Run tests
+pnpm test
 
-#### Step 3: 🏃‍♂️ Running the Project
+# Run tests with coverage
+pnpm test:cov
+```
 
-- Development Mode: `pnpm start:dev`
-- Building: `pnpm build`
-- Production Mode: Set `NODE_ENV="production"` in `.env` then `pnpm build && pnpm start:prod`
+### Docker Deployment
 
-## 🤝 Feedback and Contributions
+```bash
+# Build and run all services
+docker-compose up -d
 
-We'd love to hear your feedback and suggestions for further improvements. Feel free to contribute and join us in making backend development cleaner and faster!
+# View logs
+docker-compose logs -f app
 
-🎉 Happy coding!
+# Stop services
+docker-compose down
+```
+
+The API will be available at `http://localhost:8080` with Swagger docs at `http://localhost:8080/api-docs`.
 
 ## 📁 Folder Structure
 

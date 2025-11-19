@@ -37,12 +37,32 @@ const envSchema = z.object({
 	JWT_SECRET: z.string().min(32).default("your-super-secret-jwt-key-change-this-in-production"),
 	JWT_EXPIRES_IN: z.string().default("24h"),
 
+	// Encryption Configuration (for API keys)
+	ENCRYPTION_KEY: z.string().length(64).default("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+
 	// Rate Limiting
 	API_RATE_LIMIT: z.coerce.number().int().positive().default(1000),
 
 	// Cache TTL (in seconds)
 	CACHE_TTL_USAGE_DAILY: z.coerce.number().int().positive().default(3600),
 	CACHE_TTL_USAGE_TOP: z.coerce.number().int().positive().default(3600),
+
+	// Cache Versioning (increment to invalidate all cache)
+	CACHE_VERSION: z.string().default("v1"),
+
+	// Cache Pre-warming
+	CACHE_PREWARM_ENABLED: z
+		.string()
+		.transform((val) => val === "true" || val === "1")
+		.default("true"),
+	CACHE_PREWARM_CRON_ENABLED: z
+		.string()
+		.transform((val) => val === "true" || val === "1")
+		.default("true"),
+	CACHE_HIT_TRACKING_ENABLED: z
+		.string()
+		.transform((val) => val === "true" || val === "1")
+		.default("true"),
 
 	// Logging
 	LOG_BATCH_SIZE: z.coerce.number().int().positive().default(100),
