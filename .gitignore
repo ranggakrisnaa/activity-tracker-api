@@ -16,6 +16,7 @@ dist-ssr
 .env
 
 husky/_
+.vscode
 
 # Editor directories and files
 !.vscode/extensions.json
