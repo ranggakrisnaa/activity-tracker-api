@@ -37,6 +37,9 @@ const envSchema = z.object({
 	JWT_SECRET: z.string().min(32).default("your-super-secret-jwt-key-change-this-in-production"),
 	JWT_EXPIRES_IN: z.string().default("24h"),
 
+	// Encryption Configuration (for API keys)
+	ENCRYPTION_KEY: z.string().length(64).default("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+
 	// Rate Limiting
 	API_RATE_LIMIT: z.coerce.number().int().positive().default(1000),
 
