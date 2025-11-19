@@ -1,28 +1,10 @@
 import type { Request, Response, NextFunction } from "express";
-import { verifyJWT, type JWTPayload } from "@/utils/auth.utils";
+import { verifyJWT } from "@/utils/auth.utils";
 import { compareAPIKey } from "@/utils/crypto.utils";
 import { AppDataSource } from "@/database/data-source";
 import { Client } from "@/database/entities/client.entity";
+import { logger } from "@/server";
 
-// Extend Express Request to include authenticated client info
-declare global {
-	namespace Express {
-		interface Request {
-			client?: {
-				id: string;
-				clientId: string;
-				email: string;
-				name: string;
-				apiKey?: string;
-			};
-		}
-	}
-}
-
-/**
- * Middleware to authenticate requests using JWT token
- * Expects: Authorization: Bearer <token>
- */
 export async function authenticateJWT(req: Request, res: Response, next: NextFunction): Promise<void> {
 	try {
 		const authHeader = req.headers.authorization;
@@ -35,7 +17,7 @@ export async function authenticateJWT(req: Request, res: Response, next: NextFun
 			return;
 		}
 
-		const token = authHeader.substring(7); // Remove 'Bearer ' prefix
+		const token = authHeader.substring(7);
 
 		// Verify JWT
 		const result = verifyJWT(token);
@@ -77,7 +59,6 @@ export async function authenticateJWT(req: Request, res: Response, next: NextFun
 
 		// Attach client info to request
 		req.client = {
-			id: client.id,
 			clientId: client.clientId,
 			email: client.email,
 			name: client.name,
@@ -85,6 +66,7 @@ export async function authenticateJWT(req: Request, res: Response, next: NextFun
 
 		next();
 	} catch (error) {
+		logger.error({ error }, "JWT authentication error");
 		res.status(401).json({
 			success: false,
 			message: "Invalid or malformed token.",
@@ -92,10 +74,6 @@ export async function authenticateJWT(req: Request, res: Response, next: NextFun
 	}
 }
 
-/**
- * Middleware to authenticate requests using API Key
- * Expects: X-API-Key: <key> header
- */
 export async function authenticateAPIKey(req: Request, res: Response, next: NextFunction): Promise<void> {
 	try {
 		const apiKey = req.headers["x-api-key"] as string;
@@ -109,12 +87,9 @@ export async function authenticateAPIKey(req: Request, res: Response, next: Next
 		}
 
 		// Find client by API key (stored in encrypted form)
-		// We'll need to query all clients and compare hashes (not efficient for large scale)
-		// Better approach: Use a separate index or cache for API keys
 		const clientRepo = AppDataSource.getRepository(Client);
 
-		// For now, we'll fetch clients with apiKey not null and compare
-		// In production, consider indexing or caching this
+		// Fetch all active clients to compare API keys
 		const clients = await clientRepo.find({
 			where: { isActive: true },
 			select: ["id", "clientId", "email", "name", "apiKey", "apiKeyHash"],
@@ -148,7 +123,6 @@ export async function authenticateAPIKey(req: Request, res: Response, next: Next
 
 		// Attach client info to request
 		req.client = {
-			id: matchedClient.id,
 			clientId: matchedClient.clientId,
 			email: matchedClient.email,
 			name: matchedClient.name,

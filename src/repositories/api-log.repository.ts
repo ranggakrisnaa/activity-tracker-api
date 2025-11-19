@@ -180,9 +180,9 @@ export class ApiLogRepository {
 		}));
 	}
 
-	async getTopClients(limit = 10, days = 30): Promise<TopClientResult[]> {
+	async getTopClients(limit = 10, hours = 24): Promise<TopClientResult[]> {
 		const startDate = new Date();
-		startDate.setDate(startDate.getDate() - days);
+		startDate.setHours(startDate.getHours() - hours);
 
 		const query = this.repository
 			.createQueryBuilder("log")
@@ -201,7 +201,7 @@ export class ApiLogRepository {
 		return results.map((row) => ({
 			clientId: row.client_id,
 			requestCount: Number.parseInt(row.request_count, 10),
-			avgResponseTime: Number.parseFloat(row.avg_response_time),
+			avgResponseTime: Number.parseFloat(row.avg_response_time || "0"),
 			errorCount: Number.parseInt(row.error_count, 10),
 			lastAccess: new Date(row.last_access),
 		}));
