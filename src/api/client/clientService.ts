@@ -3,6 +3,7 @@ import type { Client, RegisterClientResponse } from "@/api/client/clientModel";
 import { clientRepository } from "@/repositories/client.repository";
 import { apiLogRepository, type DailyUsageResult, type TopClientResult } from "@/repositories/api-log.repository";
 import { redisService } from "@/services/redis.service";
+import { cacheHitTracker } from "@/services/cache-hit-tracker.service";
 import { generateJWT } from "@/utils/auth.utils";
 import { env } from "@/common/utils/envConfig";
 import { ServiceResponse } from "@/common/models/serviceResponse";
@@ -142,6 +143,21 @@ export class ClientService {
 				userAgent: data.userAgent,
 			});
 
+			// Publish real-time update via Redis Pub/Sub
+			const logEvent = {
+				clientId,
+				endpoint: data.endpoint,
+				method: data.method,
+				statusCode: data.statusCode,
+				responseTime: data.responseTime || 0,
+				timestamp: new Date(),
+			};
+
+			// Fire and forget - don't block the response
+			redisService.publish("api:log:new", JSON.stringify(logEvent)).catch((error) => {
+				logger.error({ error }, "Failed to publish log event");
+			});
+
 			return ServiceResponse.success("API hit logged successfully", null, StatusCodes.CREATED);
 		} catch (ex) {
 			const errorMessage = `Error logging API hit: ${(ex as Error).message}`;
@@ -155,49 +171,51 @@ export class ClientService {
 	}
 
 	async getDailyUsage(days: number): Promise<ServiceResponse<DailyUsageResult[]>> {
-		try {
-			const cacheKey = `usage:daily:${days}`;
+		const cacheKey = `usage:daily:${days}`;
 
-			// Try to get from cache first
-			const cached = await redisService.getJSON<DailyUsageResult[]>(cacheKey);
-			if (cached && cached.length > 0) {
-				logger.info({ cacheKey }, "Daily usage retrieved from cache");
-				return ServiceResponse.success("Daily usage retrieved from cache", cached);
+		try {
+			// Try to get from cache first (with graceful fallback)
+			try {
+				const cached = await redisService.getJSON<DailyUsageResult[]>(cacheKey);
+				if (cached && cached.length > 0) {
+					logger.info({ cacheKey }, "Daily usage retrieved from cache");
+					// Track cache HIT using INCRBY
+					if (env.CACHE_HIT_TRACKING_ENABLED) {
+						cacheHitTracker.trackAccess(cacheKey, true).catch(() => {});
+					}
+					return ServiceResponse.success("Daily usage retrieved from cache", cached);
+				}
+			} catch (cacheError) {
+				logger.warn({ error: cacheError, cacheKey }, "Cache read failed, falling back to database");
 			}
 
-			// Get all clients and aggregate their usage
-			const clients = await clientRepository.findAllActive();
-			const allUsageData: Map<string, DailyUsageResult> = new Map();
+			// Track cache MISS using INCRBY
+			if (env.CACHE_HIT_TRACKING_ENABLED) {
+				cacheHitTracker.trackAccess(cacheKey, false).catch(() => {});
+			}
 
-			// Aggregate usage across all clients
+			// Get all clients and their individual usage (fallback to database)
+			const clients = await clientRepository.findAllActive();
+			const allUsageData: DailyUsageResult[] = [];
+
+			// Collect usage from all clients (no aggregation, show per-client data)
 			for (const client of clients) {
 				const clientUsage = await apiLogRepository.getDailyUsage(client.clientId, days);
-
-				for (const usage of clientUsage) {
-					const existing = allUsageData.get(usage.date);
-					if (existing) {
-						// Aggregate data for the same date
-						existing.requestCount += usage.requestCount;
-						existing.errorCount += usage.errorCount;
-						// Calculate weighted average for response time
-						const totalRequests = existing.requestCount + usage.requestCount;
-						existing.avgResponseTime =
-							(existing.avgResponseTime * existing.requestCount + usage.avgResponseTime * usage.requestCount) /
-							totalRequests;
-					} else {
-						allUsageData.set(usage.date, { ...usage });
-					}
-				}
+				allUsageData.push(...clientUsage);
 			}
 
-			// Convert map to array and sort by date descending
-			const result = Array.from(allUsageData.values()).sort(
-				(a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
-			);
-
-			// Cache the result (only if there's data)
+			// Sort by date descending, then by request count descending
+			const result = allUsageData.sort((a, b) => {
+				const dateCompare = new Date(b.date).getTime() - new Date(a.date).getTime();
+				if (dateCompare !== 0) return dateCompare;
+				return b.requestCount - a.requestCount;
+			});
 			if (result.length > 0) {
-				await redisService.setJSON(cacheKey, result, env.CACHE_TTL_USAGE_DAILY);
+				try {
+					await redisService.setJSON(cacheKey, result, env.CACHE_TTL_USAGE_DAILY);
+				} catch (cacheError) {
+					logger.warn({ error: cacheError, cacheKey }, "Failed to write to cache, continuing with response");
+				}
 			}
 
 			return ServiceResponse.success("Daily usage retrieved successfully", result);
@@ -213,22 +231,38 @@ export class ClientService {
 	}
 
 	async getTopClients(hours: number, limit: number): Promise<ServiceResponse<TopClientResult[]>> {
-		try {
-			const cacheKey = `usage:top:${hours}:${limit}`;
+		const cacheKey = `usage:top:${hours}:${limit}`;
 
-			// Try to get from cache first
-			const cached = await redisService.getJSON<TopClientResult[]>(cacheKey);
-			if (cached && cached.length > 0) {
-				logger.info({ cacheKey }, "Top clients retrieved from cache");
-				return ServiceResponse.success("Top clients retrieved from cache", cached);
+		try {
+			// Try to get from cache first (with graceful fallback)
+			try {
+				const cached = await redisService.getJSON<TopClientResult[]>(cacheKey);
+				if (cached && cached.length > 0) {
+					// Track cache HIT using INCRBY
+					if (env.CACHE_HIT_TRACKING_ENABLED) {
+						cacheHitTracker.trackAccess(cacheKey, true).catch(() => {});
+					}
+					return ServiceResponse.success("Top clients retrieved from cache", cached);
+				}
+			} catch (cacheError) {
+				logger.warn({ error: cacheError, cacheKey }, "Cache read failed, falling back to database");
+			}
+
+			// Track cache MISS using INCRBY
+			if (env.CACHE_HIT_TRACKING_ENABLED) {
+				cacheHitTracker.trackAccess(cacheKey, false).catch(() => {});
 			}
 
 			// Get top clients from database (directly using hours)
 			const topClients = await apiLogRepository.getTopClients(limit, hours);
 
-			// Cache the result (even if empty, to avoid repeated queries)
+			// Cache the result (even if empty, to avoid repeated queries) - gracefully handle cache write failures
 			if (topClients.length > 0) {
-				await redisService.setJSON(cacheKey, topClients, env.CACHE_TTL_USAGE_TOP);
+				try {
+					await redisService.setJSON(cacheKey, topClients, env.CACHE_TTL_USAGE_TOP);
+				} catch (cacheError) {
+					logger.warn({ error: cacheError, cacheKey }, "Failed to write to cache, continuing with response");
+				}
 			}
 
 			return ServiceResponse.success("Top clients retrieved successfully", topClients);
@@ -241,6 +275,105 @@ export class ClientService {
 				StatusCodes.INTERNAL_SERVER_ERROR
 			);
 		}
+	}
+
+	async prewarmDailyUsage(days: number): Promise<void> {
+		const cacheKey = `usage:daily:${days}`;
+
+		try {
+			// Get fresh data from database (skip cache read)
+			const clients = await clientRepository.findAllActive();
+			const allUsageData: DailyUsageResult[] = [];
+
+			for (const client of clients) {
+				const clientUsage = await apiLogRepository.getDailyUsage(client.clientId, days);
+				allUsageData.push(...clientUsage);
+			}
+
+			// Sort by date descending, then by request count descending
+			const result = allUsageData.sort((a, b) => {
+				const dateCompare = new Date(b.date).getTime() - new Date(a.date).getTime();
+				if (dateCompare !== 0) return dateCompare;
+				return b.requestCount - a.requestCount;
+			});
+
+			// Write to cache
+			if (result.length > 0) {
+				await redisService.setJSON(cacheKey, result, env.CACHE_TTL_USAGE_DAILY);
+				logger.info({ cacheKey, days, recordCount: result.length }, "Pre-warmed daily usage cache");
+			}
+		} catch (error) {
+			logger.warn({ error, days }, "Failed to pre-warm daily usage cache");
+			throw error;
+		}
+	}
+
+	async prewarmTopClients(hours: number, limit: number): Promise<void> {
+		const cacheKey = `usage:top:${hours}:${limit}`;
+
+		try {
+			// Get fresh data from database (skip cache read)
+			const topClients = await apiLogRepository.getTopClients(limit, hours);
+
+			// Write to cache
+			if (topClients.length > 0) {
+				await redisService.setJSON(cacheKey, topClients, env.CACHE_TTL_USAGE_TOP);
+				logger.info({ cacheKey, hours, limit, recordCount: topClients.length }, "Pre-warmed top clients cache");
+			}
+		} catch (error) {
+			logger.warn({ error, hours, limit }, "Failed to pre-warm top clients cache");
+			throw error;
+		}
+	}
+
+	async streamUsageUpdates(
+		clientId: string,
+		channel: string,
+		writeFn: (data: string) => void,
+		onClose: (cleanup: () => void) => void
+	): Promise<void> {
+		logger.info({ clientId, channel }, "SSE client connected");
+
+		// Send initial connection event
+		writeFn(`event: connected\n`);
+		writeFn(`data: ${JSON.stringify({ clientId, channel, timestamp: new Date() })}\n\n`);
+
+		// Set up interval to send heartbeat (every 30 seconds)
+		const heartbeatInterval = setInterval(() => {
+			writeFn(`: heartbeat ${Date.now()}\n\n`);
+		}, 30000);
+
+		// Set up interval to send usage updates (every 10 seconds)
+		const updateInterval = setInterval(async () => {
+			try {
+				// Send daily usage update if subscribed
+				if (channel === "all" || channel === "daily") {
+					const dailyUsage = await this.getDailyUsage(7);
+					if (dailyUsage.success && dailyUsage.responseObject) {
+						writeFn(`event: usage:daily:update\n`);
+						writeFn(`data: ${JSON.stringify(dailyUsage.responseObject)}\n\n`);
+					}
+				}
+
+				// Send top clients update if subscribed
+				if (channel === "all" || channel === "top") {
+					const topClients = await this.getTopClients(24, 3);
+					if (topClients.success && topClients.responseObject) {
+						writeFn(`event: usage:top:update\n`);
+						writeFn(`data: ${JSON.stringify(topClients.responseObject)}\n\n`);
+					}
+				}
+			} catch (error) {
+				logger.error({ error, clientId }, "Error sending SSE update");
+			}
+		}, 10000);
+
+		// Register cleanup callback
+		onClose(() => {
+			clearInterval(heartbeatInterval);
+			clearInterval(updateInterval);
+			logger.info({ clientId, channel }, "SSE client disconnected");
+		});
 	}
 }
 

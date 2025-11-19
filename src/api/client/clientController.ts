@@ -55,6 +55,35 @@ class ClientController {
 		const serviceResponse = await clientService.getTopClients(hours, limit);
 		res.status(serviceResponse.statusCode).send(serviceResponse);
 	};
+
+	public streamUsageUpdates: RequestHandler = async (req: Request, res: Response) => {
+		const clientId = req.client?.clientId;
+		const channel = (req.query.channel as string) || "all";
+
+		if (!clientId) {
+			res.status(401).json({ success: false, message: "Unauthorized" });
+			return;
+		}
+
+		// Set SSE headers
+		res.setHeader("Content-Type", "text/event-stream");
+		res.setHeader("Cache-Control", "no-cache");
+		res.setHeader("Connection", "keep-alive");
+		res.setHeader("X-Accel-Buffering", "no");
+
+		// Stream updates via service
+		await clientService.streamUsageUpdates(
+			clientId,
+			channel,
+			(data: string) => res.write(data),
+			(cleanup: () => void) => {
+				req.on("close", () => {
+					cleanup();
+					res.end();
+				});
+			}
+		);
+	};
 }
 
 export const clientController = new ClientController();

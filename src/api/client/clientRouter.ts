@@ -13,10 +13,12 @@ import {
 import { createApiResponse } from "@/api-docs/openAPIResponseBuilders";
 import { validateRequest } from "@/common/utils/httpHandlers";
 import { authenticate, authenticateAPIKey } from "@/middleware/auth.middleware";
+import { authenticateSSE } from "@/middleware/sse-auth.middleware";
+import { rateLimitMiddleware } from "@/middleware/rate-limit.middleware";
 import { clientController } from "./clientController";
 
-export const clientRegistry = new OpenAPIRegistry();
-export const clientRouter: Router = express.Router();
+const clientRegistry = new OpenAPIRegistry();
+const clientRouter: Router = express.Router();
 
 // Register schemas for OpenAPI
 clientRegistry.register("RegisterClientResponse", RegisterClientResponseSchema);
@@ -60,7 +62,13 @@ clientRegistry.registerPath({
 	responses: createApiResponse(z.object({ success: z.boolean(), message: z.string() }), "API hit logged successfully"),
 });
 
-clientRouter.post("/logs", authenticateAPIKey, validateRequest(LogApiHitSchema), clientController.logApiHit);
+clientRouter.post(
+	"/logs",
+	authenticateAPIKey,
+	rateLimitMiddleware,
+	validateRequest(LogApiHitSchema),
+	clientController.logApiHit
+);
 
 // GET /api/usage/daily - Fetch daily usage for last 7 days per client
 clientRegistry.registerPath({
@@ -84,6 +92,7 @@ clientRouter.get(
 	"/usage/daily",
 	authenticate,
 	authenticateAPIKey,
+	rateLimitMiddleware,
 	validateRequest(GetDailyUsageSchema),
 	clientController.getDailyUsage
 );
@@ -110,6 +119,45 @@ clientRouter.get(
 	"/usage/top",
 	authenticate,
 	authenticateAPIKey,
+	rateLimitMiddleware,
 	validateRequest(GetTopClientsSchema),
 	clientController.getTopClients
 );
+
+// GET /api/usage/stream - Server-Sent Events endpoint for real-time updates
+clientRegistry.registerPath({
+	method: "get",
+	path: "/api/usage/stream",
+	tags: ["Usage Analytics", "Real-time"],
+	security: [{ bearerAuth: [] }, { apiKeyAuth: [] }],
+	request: {
+		query: z.object({
+			token: z.string().optional().openapi({ example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." }),
+			apiKey: z.string().optional().openapi({ example: "sk_live_abc123..." }),
+			channel: z
+				.enum(["all", "logs", "daily", "top"])
+				.optional()
+				.openapi({ example: "all", description: "Channel to subscribe: all, logs, daily, or top" }),
+		}),
+	},
+	responses: {
+		200: {
+			description: "SSE stream established. Events: connected, log:new, usage:daily:update, usage:top:update",
+			content: {
+				"text/event-stream": {
+					schema: z.object({
+						event: z.string(),
+						data: z.unknown(),
+					}),
+				},
+			},
+		},
+		401: {
+			description: "Unauthorized - Invalid or missing authentication",
+		},
+	},
+});
+
+clientRouter.get("/usage/stream", authenticateSSE, clientController.streamUsageUpdates);
+
+export { clientRegistry, clientRouter };

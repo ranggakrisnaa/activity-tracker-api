@@ -34,6 +34,7 @@ export async function authenticateJWT(req: Request, res: Response, next: NextFun
 		const clientRepo = AppDataSource.getRepository(Client);
 		const client = await clientRepo.findOne({
 			where: { clientId: result.payload.clientId },
+			select: ["id", "clientId", "email", "name", "isActive", "rateLimit"],
 		});
 
 		if (!client) {
@@ -62,6 +63,7 @@ export async function authenticateJWT(req: Request, res: Response, next: NextFun
 			clientId: client.clientId,
 			email: client.email,
 			name: client.name,
+			rateLimit: client.rateLimit, // Include per-client rate limit
 		};
 
 		next();
@@ -92,7 +94,7 @@ export async function authenticateAPIKey(req: Request, res: Response, next: Next
 		// Fetch all active clients to compare API keys
 		const clients = await clientRepo.find({
 			where: { isActive: true },
-			select: ["id", "clientId", "email", "name", "apiKey", "apiKeyHash"],
+			select: ["id", "clientId", "email", "name", "apiKey", "apiKeyHash", "rateLimit"],
 		});
 
 		let matchedClient: Client | null = null;
@@ -126,7 +128,8 @@ export async function authenticateAPIKey(req: Request, res: Response, next: Next
 			clientId: matchedClient.clientId,
 			email: matchedClient.email,
 			name: matchedClient.name,
-			apiKey: apiKey, // Store for rate limiting
+			apiKey: apiKey,
+			rateLimit: matchedClient.rateLimit,
 		};
 
 		next();

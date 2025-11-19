@@ -1,9 +1,9 @@
 import type { Request, Response, NextFunction } from "express";
 import { rateLimiterService } from "@/services/rate-limiter.service";
+import { logger } from "@/server";
 
 /**
  * Rate limiting middleware for authenticated clients
- * Must be used after authentication middleware
  */
 export async function rateLimitMiddleware(req: Request, res: Response, next: NextFunction): Promise<void> {
 	// Check if client is authenticated
@@ -14,10 +14,18 @@ export async function rateLimitMiddleware(req: Request, res: Response, next: Nex
 	}
 
 	try {
-		const result = await rateLimiterService.checkRateLimit(req.client.clientId);
+		// Use per-client rate limit if available, otherwise use global config
+		const clientRateLimit = req.client.rateLimit || rateLimiterService.getConfig().maxRequests;
+
+		logger.debug(
+			{ clientId: req.client.clientId, clientRateLimit, fromDB: !!req.client.rateLimit },
+			"Checking rate limit"
+		);
+
+		const result = await rateLimiterService.checkRateLimit(req.client.clientId, clientRateLimit);
 
 		// Set rate limit headers
-		res.setHeader("X-RateLimit-Limit", rateLimiterService.getConfig().maxRequests);
+		res.setHeader("X-RateLimit-Limit", clientRateLimit);
 		res.setHeader("X-RateLimit-Remaining", result.remaining);
 		res.setHeader("X-RateLimit-Reset", result.resetAt.toISOString());
 		res.setHeader("X-RateLimit-Window", `${rateLimiterService.getConfig().windowSize}s`);
@@ -32,7 +40,7 @@ export async function rateLimitMiddleware(req: Request, res: Response, next: Nex
 				message: "Rate limit exceeded. Please try again later.",
 				error: {
 					code: "RATE_LIMIT_EXCEEDED",
-					limit: rateLimiterService.getConfig().maxRequests,
+					limit: clientRateLimit,
 					current: result.current,
 					resetAt: result.resetAt.toISOString(),
 					retryAfter: `${retryAfter}s`,
@@ -45,7 +53,8 @@ export async function rateLimitMiddleware(req: Request, res: Response, next: Nex
 		next();
 	} catch (error) {
 		// On error, log but allow the request (fail open)
-		console.error("Rate limit middleware error:", error);
+		// This ensures availability over strict rate limiting
+		logger.error({ error, clientId: req.client?.clientId }, "Rate limit middleware error");
 		next();
 	}
 }

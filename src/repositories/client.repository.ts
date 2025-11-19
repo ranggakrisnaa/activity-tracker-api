@@ -2,6 +2,7 @@ import { Repository } from "typeorm";
 import { AppDataSource } from "@/database/data-source";
 import { Client } from "@/database/entities/client.entity";
 import { generateClientId, generateAPIKey, hashAPIKey, encrypt } from "@/utils/crypto.utils";
+import { withDatabaseRetry } from "@/utils/retry.utils";
 
 export class ClientRepository {
 	private repository: Repository<Client>;
@@ -32,7 +33,7 @@ export class ClientRepository {
 		// Return client with plain API key for one-time display
 		return {
 			...savedClient,
-			apiKey, // Plain text API key (only returned once)
+			apiKey,
 		} as Client;
 	}
 
@@ -41,21 +42,29 @@ export class ClientRepository {
 	}
 
 	async findByClientId(clientId: string): Promise<Client | null> {
-		return await this.repository.findOne({ where: { clientId } });
+		return await withDatabaseRetry(async () => {
+			return await this.repository.findOne({ where: { clientId } });
+		});
 	}
 
 	async findByEmail(email: string): Promise<Client | null> {
-		return await this.repository.findOne({ where: { email } });
+		return await withDatabaseRetry(async () => {
+			return await this.repository.findOne({ where: { email } });
+		});
 	}
 
 	async findByApiKeyHash(apiKeyHash: string): Promise<Client | null> {
-		return await this.repository.findOne({ where: { apiKeyHash } });
+		return await withDatabaseRetry(async () => {
+			return await this.repository.findOne({ where: { apiKeyHash } });
+		});
 	}
 
 	async findAllActive(): Promise<Client[]> {
-		return await this.repository.find({
-			where: { isActive: true },
-			order: { createdAt: "DESC" },
+		return await withDatabaseRetry(async () => {
+			return await this.repository.find({
+				where: { isActive: true },
+				order: { createdAt: "DESC" },
+			});
 		});
 	}
 

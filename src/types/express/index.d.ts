@@ -7,6 +7,7 @@ declare global {
 				email: string;
 				name: string;
 				apiKey?: string;
+				rateLimit?: number; // Per-client rate limit from database
 			};
 		}
 	}

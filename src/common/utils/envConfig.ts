@@ -47,6 +47,23 @@ const envSchema = z.object({
 	CACHE_TTL_USAGE_DAILY: z.coerce.number().int().positive().default(3600),
 	CACHE_TTL_USAGE_TOP: z.coerce.number().int().positive().default(3600),
 
+	// Cache Versioning (increment to invalidate all cache)
+	CACHE_VERSION: z.string().default("v1"),
+
+	// Cache Pre-warming
+	CACHE_PREWARM_ENABLED: z
+		.string()
+		.transform((val) => val === "true" || val === "1")
+		.default("true"),
+	CACHE_PREWARM_CRON_ENABLED: z
+		.string()
+		.transform((val) => val === "true" || val === "1")
+		.default("true"),
+	CACHE_HIT_TRACKING_ENABLED: z
+		.string()
+		.transform((val) => val === "true" || val === "1")
+		.default("true"),
+
 	// Logging
 	LOG_BATCH_SIZE: z.coerce.number().int().positive().default(100),
 	LOG_BATCH_INTERVAL_MS: z.coerce.number().int().positive().default(5000),

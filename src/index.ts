@@ -2,6 +2,7 @@ import { env } from "@/common/utils/envConfig";
 import { app, logger } from "@/server";
 import { redisService } from "@/services/redis.service";
 import { closeDatabase, initializeDatabase } from "./database/data-source";
+import { websocketService } from "./services/websocket.service";
 
 async function startServer() {
 	try {
@@ -15,15 +16,63 @@ async function startServer() {
 		await redisService.connect();
 		logger.info("✅ Redis connected");
 
+		// Pre-warm cache for high-traffic endpoints
+		if (env.CACHE_PREWARM_ENABLED) {
+			logger.info("🔄 Pre-warming cache...");
+			const { cachePrewarmService } = await import("./services/cache-prewarm.service");
+			await cachePrewarmService.prewarmAll();
+			logger.info("✅ Cache pre-warmed");
+
+			// Start cron job for periodic cache pre-warming
+			if (env.CACHE_PREWARM_CRON_ENABLED) {
+				cachePrewarmService.startCronJob();
+			}
+		} else {
+			logger.info("⏭️  Cache pre-warming disabled");
+		}
+
 		// Start HTTP server
 		const server = app.listen(env.PORT, () => {
 			const { NODE_ENV, HOST, PORT } = env;
 			logger.info(`Server (${NODE_ENV}) running on port http://${HOST}:${PORT}`);
 		});
 
+		// Initialize WebSocket service
+		logger.info("🔄 Initializing WebSocket...");
+		websocketService.initialize(server);
+
+		// Subscribe to Redis Pub/Sub for real-time updates
+		await redisService.subscribe("api:log:new", (message) => {
+			try {
+				const logEvent = JSON.parse(message);
+				websocketService.broadcastNewLog(logEvent);
+			} catch (error) {
+				logger.error({ error, message }, "Failed to parse Redis message");
+			}
+		});
+
 		// Graceful shutdown handler
 		const onCloseSignal = async () => {
 			logger.info("sigint received, shutting down gracefully...");
+
+			// Stop cache pre-warming cron job
+			if (env.CACHE_PREWARM_CRON_ENABLED) {
+				try {
+					const { cachePrewarmService } = await import("./services/cache-prewarm.service");
+					cachePrewarmService.stopCronJob();
+					logger.info("Cache pre-warming cron job stopped");
+				} catch (error) {
+					logger.error({ error }, "Error stopping cache pre-warming cron");
+				}
+			}
+
+			// Close WebSocket connections
+			try {
+				websocketService.close();
+				logger.info("WebSocket connections closed");
+			} catch (error) {
+				logger.error({ error }, "Error closing WebSocket");
+			}
 
 			// Close HTTP server
 			server.close(async () => {

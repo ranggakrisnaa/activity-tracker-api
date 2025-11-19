@@ -2,6 +2,8 @@ import { Repository, Between } from "typeorm";
 import { AppDataSource } from "@/database/data-source";
 import { ApiLog } from "@/database/entities/api_log.entity";
 import { logger } from "@/server";
+import { withDatabaseRetry, isTransientDatabaseError } from "@/utils/retry.utils";
+import { inMemoryLogStorage } from "@/services/in-memory-storage.service";
 
 export interface CreateApiLogData {
 	clientId: string;
@@ -67,6 +69,53 @@ export class ApiLogRepository {
 		if (this.batchQueue.length > 0) {
 			await this.flushBatch();
 		}
+		// Flush in-memory logs
+		if (!inMemoryLogStorage.isEmpty()) {
+			await this.flushInMemoryLogs();
+		}
+		// Stop in-memory storage cleanup timer
+		inMemoryLogStorage.stop();
+	}
+
+	/**
+	 * Flush logs from in-memory storage to database
+	 * Called when database becomes available again
+	 */
+	private async flushInMemoryLogs(): Promise<void> {
+		const inMemoryLogs = inMemoryLogStorage.flush();
+		if (inMemoryLogs.length === 0) return;
+
+		logger.info({ count: inMemoryLogs.length }, "Flushing in-memory logs to database");
+
+		try {
+			await withDatabaseRetry(async () => {
+				const entities = inMemoryLogs.map((log) =>
+					this.repository.create({
+						clientId: log.clientId,
+						apiKey: log.apiKey,
+						endpoint: log.endpoint,
+						method: log.method,
+						statusCode: log.statusCode,
+						responseTime: log.responseTime,
+						ipAddress: log.ipAddress,
+						userAgent: log.userAgent,
+						requestHeaders: log.requestHeaders,
+						requestBody: log.requestBody,
+						responseBody: log.responseBody,
+						errorMessage: log.errorMessage,
+						metadata: log.metadata,
+						timestamp: new Date(),
+					})
+				);
+
+				await this.repository.save(entities);
+				logger.info(`✅ Successfully flushed ${entities.length} in-memory logs to database`);
+			});
+		} catch (error) {
+			logger.error({ error, count: inMemoryLogs.length }, "Failed to flush in-memory logs, re-storing");
+			// Put logs back to in-memory storage
+			inMemoryLogs.forEach((log) => inMemoryLogStorage.add(log));
+		}
 	}
 
 	async addToBatch(data: CreateApiLogData): Promise<void> {
@@ -85,32 +134,51 @@ export class ApiLogRepository {
 		this.batchQueue = [];
 
 		try {
-			const entities = logsToInsert.map((log) =>
-				this.repository.create({
-					clientId: log.clientId,
-					apiKey: log.apiKey,
-					endpoint: log.endpoint,
-					method: log.method,
-					statusCode: log.statusCode,
-					responseTime: log.responseTime,
-					ipAddress: log.ipAddress,
-					userAgent: log.userAgent,
-					requestHeaders: log.requestHeaders,
-					requestBody: log.requestBody,
-					responseBody: log.responseBody,
-					errorMessage: log.errorMessage,
-					metadata: log.metadata,
-					timestamp: new Date(),
-				})
-			);
+			// Try to flush in-memory logs first if any
+			if (!inMemoryLogStorage.isEmpty()) {
+				await this.flushInMemoryLogs();
+			}
 
-			await this.repository.save(entities);
-			logger.info(`✅ Flushed ${entities.length} API logs to database`);
+			// Use retry logic for database operations
+			await withDatabaseRetry(async () => {
+				const entities = logsToInsert.map((log) =>
+					this.repository.create({
+						clientId: log.clientId,
+						apiKey: log.apiKey,
+						endpoint: log.endpoint,
+						method: log.method,
+						statusCode: log.statusCode,
+						responseTime: log.responseTime,
+						ipAddress: log.ipAddress,
+						userAgent: log.userAgent,
+						requestHeaders: log.requestHeaders,
+						requestBody: log.requestBody,
+						responseBody: log.responseBody,
+						errorMessage: log.errorMessage,
+						metadata: log.metadata,
+						timestamp: new Date(),
+					})
+				);
+
+				await this.repository.save(entities);
+				logger.info(`✅ Flushed ${entities.length} API logs to database`);
+			});
 		} catch (error) {
-			logger.error({ error, count: logsToInsert.length }, "Failed to flush API logs batch");
-			// Re-queue failed logs (with limit to prevent memory issues)
-			if (this.batchQueue.length < 1000) {
-				this.batchQueue.unshift(...logsToInsert);
+			const err = error as Error;
+			logger.error({ error: err, count: logsToInsert.length }, "Failed to flush API logs batch after retries");
+
+			// Check if it's a transient error - use in-memory storage for graceful degradation
+			if (isTransientDatabaseError(err)) {
+				logger.warn({ count: logsToInsert.length }, "Database temporarily unavailable, storing logs in memory");
+				logsToInsert.forEach((log) => inMemoryLogStorage.add(log));
+			} else {
+				// Re-queue failed logs for non-transient errors (with limit to prevent memory issues)
+				if (this.batchQueue.length < 1000) {
+					this.batchQueue.unshift(...logsToInsert);
+					logger.warn({ count: logsToInsert.length }, "Re-queued failed logs");
+				} else {
+					logger.error({ count: logsToInsert.length }, "Batch queue full, dropping logs");
+				}
 			}
 		}
 	}
@@ -137,21 +205,25 @@ export class ApiLogRepository {
 	}
 
 	async findByClientId(clientId: string, limit = 100, offset = 0): Promise<ApiLog[]> {
-		return await this.repository.find({
-			where: { clientId },
-			order: { timestamp: "DESC" },
-			take: limit,
-			skip: offset,
+		return await withDatabaseRetry(async () => {
+			return await this.repository.find({
+				where: { clientId },
+				order: { timestamp: "DESC" },
+				take: limit,
+				skip: offset,
+			});
 		});
 	}
 
 	async findByDateRange(startDate: Date, endDate: Date, limit = 1000): Promise<ApiLog[]> {
-		return await this.repository.find({
-			where: {
-				timestamp: Between(startDate, endDate),
-			},
-			order: { timestamp: "DESC" },
-			take: limit,
+		return await withDatabaseRetry(async () => {
+			return await this.repository.find({
+				where: {
+					timestamp: Between(startDate, endDate),
+				},
+				order: { timestamp: "DESC" },
+				take: limit,
+			});
 		});
 	}
 
@@ -170,7 +242,9 @@ export class ApiLogRepository {
 			.groupBy("DATE(log.timestamp)")
 			.orderBy("date", "DESC");
 
-		const results = await query.getRawMany();
+		const results = await withDatabaseRetry(async () => {
+			return await query.getRawMany();
+		});
 
 		return results.map((row) => ({
 			date: row.date,
@@ -196,7 +270,9 @@ export class ApiLogRepository {
 			.orderBy("request_count", "DESC")
 			.limit(limit);
 
-		const results = await query.getRawMany();
+		const results = await withDatabaseRetry(async () => {
+			return await query.getRawMany();
+		});
 
 		return results.map((row) => ({
 			clientId: row.client_id,

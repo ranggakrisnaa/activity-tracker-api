@@ -316,14 +316,20 @@ class RedisService {
 	}
 
 	/**
-	 * Delete multiple keys from Redis (uses write primary)
+	 * Delete multiple keys from Redis using pipeline (uses write primary)
 	 */
 	async delMany(keys: string[]): Promise<void> {
 		if (keys.length === 0) return;
 
 		this.ensureConnected();
 		try {
-			await this.writeClient!.del(...keys);
+			// Use pipeline for better performance with multiple keys
+			const pipeline = this.writeClient!.pipeline();
+			for (const key of keys) {
+				pipeline.del(key);
+			}
+			await pipeline.exec();
+			logger.debug({ keyCount: keys.length }, "Deleted multiple keys via pipeline");
 		} catch (error) {
 			logger.error({ error, keys }, `Failed to DELETE keys`);
 			throw error;
@@ -524,6 +530,140 @@ class RedisService {
 		if (!this.isConnected || !this.writeClient || !this.readClient) {
 			throw new Error("Redis is not connected. Call connect() first.");
 		}
+	}
+
+	/**
+	 * Subscribe to a Redis Pub/Sub channel
+	 */
+	async subscribe(channel: string, callback: (message: string) => void): Promise<void> {
+		this.ensureConnected();
+
+		const subscriber = this.readClient!.duplicate();
+		await subscriber.subscribe(channel);
+
+		subscriber.on("message", (ch, message) => {
+			if (ch === channel) {
+				callback(message);
+			}
+		});
+
+		logger.info({ channel }, "Subscribed to Redis channel");
+	}
+
+	/**
+	 * Publish message to Redis Pub/Sub channel
+	 */
+	async publish(channel: string, message: string): Promise<number> {
+		this.ensureConnected();
+		const result = await this.writeClient!.publish(channel, message);
+		logger.debug({ channel, message }, "Published to Redis channel");
+		return result;
+	}
+
+	/**
+	 * Execute multiple commands using Redis pipeline for better performance
+	 */
+	async pipeline(commands: Array<{ command: string; args: unknown[] }>): Promise<unknown[]> {
+		this.ensureConnected();
+		const pipeline = this.writeClient!.pipeline();
+
+		for (const { command, args } of commands) {
+			// @ts-expect-error - Dynamic command execution
+			pipeline[command](...args);
+		}
+
+		const results = await pipeline.exec();
+		if (!results) {
+			throw new Error("Pipeline execution failed");
+		}
+
+		// Extract results and check for errors
+		const parsedResults = results.map(([error, result]) => {
+			if (error) {
+				throw error;
+			}
+			return result;
+		});
+
+		logger.debug({ commandCount: commands.length }, "Pipeline executed successfully");
+		return parsedResults;
+	}
+
+	/**
+	 * Set multiple JSON values using pipeline
+	 */
+	async setJSONMany(entries: Array<{ key: string; value: unknown; ttl?: number }>): Promise<void> {
+		if (entries.length === 0) return;
+
+		this.ensureConnected();
+		const pipeline = this.writeClient!.pipeline();
+
+		for (const { key, value, ttl } of entries) {
+			const serialized = JSON.stringify(value);
+			if (ttl && ttl > 0) {
+				pipeline.setex(key, ttl, serialized);
+			} else {
+				pipeline.set(key, serialized);
+			}
+		}
+
+		await pipeline.exec();
+		logger.debug({ entryCount: entries.length }, "Set multiple JSON values via pipeline");
+	}
+
+	/**
+	 * Get multiple JSON values using pipeline
+	 */
+	async getJSONMany<T = unknown>(keys: string[]): Promise<Array<T | null>> {
+		if (keys.length === 0) return [];
+
+		this.ensureConnected();
+		const pipeline = this.readClient!.pipeline();
+
+		for (const key of keys) {
+			pipeline.get(key);
+		}
+
+		const results = await pipeline.exec();
+		if (!results) {
+			throw new Error("Pipeline execution failed");
+		}
+
+		return results.map(([error, result]) => {
+			if (error) {
+				logger.error({ error }, "Error getting value from pipeline");
+				return null;
+			}
+			if (!result) return null;
+
+			try {
+				return JSON.parse(result as string) as T;
+			} catch (parseError) {
+				logger.error({ parseError, result }, "Failed to parse JSON from cache");
+				return null;
+			}
+		});
+	}
+
+	/**
+	 * Invalidate cache with pattern matching using pipeline
+	 */
+	async invalidatePattern(pattern: string): Promise<number> {
+		this.ensureConnected();
+		const keys = await this.writeClient!.keys(pattern);
+
+		if (keys.length === 0) {
+			return 0;
+		}
+
+		const pipeline = this.writeClient!.pipeline();
+		for (const key of keys) {
+			pipeline.del(key);
+		}
+
+		await pipeline.exec();
+		logger.info({ pattern, keyCount: keys.length }, "Invalidated cache pattern via pipeline");
+		return keys.length;
 	}
 
 	/**
